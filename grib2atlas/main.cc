@@ -28,14 +28,13 @@ public:
             std::cerr << "Could not open file " << path << std::endl;
             std::exit(1);
         }
+        codes_count_in_file(nullptr, file_, &count_);
         int err;
         grib_ = codes_handle_new_from_file(nullptr, file_, PRODUCT_GRIB, &err);
         if (!grib_) {
             std::cerr << "Could not create grib handle. Error: " << err << std::endl;
             std::exit(1);
         }
-
-        codes_count_in_file(nullptr, file_, &count_);
     }
     ~GribFileReader() {
         if (grib_)
@@ -91,7 +90,7 @@ public:
         int err;
         grib_ = codes_handle_new_from_file(nullptr, file_, PRODUCT_GRIB, &err);
         if (!grib_) {
-            std::cerr << "Could not create grib handle. Error: " << err << std::endl;
+            std::cerr << "Could not create grib handle in next_message(). Error: " << err << std::endl;
             std::exit(1);
         }
         index_++;
@@ -104,7 +103,7 @@ private:
     codes_handle* grib_ = nullptr;
 
     int count_{0};
-    int index_{0};
+    int index_{1};
 };
 
 // --------------------------------------------------------------------------------------------------------------
@@ -112,13 +111,14 @@ private:
 void convert_grib_to_atlas_io(const std::string& grib_file, const std::string& atlas_io_file) {
     if (atlas::mpi::rank() == 0) {
         GribFileReader grib{grib_file};
+        size_t nfld   = grib.count();
         auto gridname = grib.get_gridname();
         atlas::io::RecordWriter atlas_io_writer;
         auto compression = atlas::util::Config("compression", "lz4");
         atlas_io_writer.set("grid.name", atlas::io::ref(gridname), compression);
         std::cout << "grid.name: " << gridname << std::endl;
         std::cout << "grid.size: " << grib.get_values_size() << std::endl;
-        size_t nfld = grib.count();
+
         atlas_io_writer.set("fields.size", nfld);
         std::cout << "fields: " << std::endl;
 
@@ -128,13 +128,15 @@ void convert_grib_to_atlas_io(const std::string& grib_file, const std::string& a
             grib.get_values(values.data(), values.size());
             auto fieldname = grib.get_string("shortName");
             auto fielddesc = grib.get_string("name");
+            long level     = grib.get_long("level");
 
-            std::cout << "    " << std::setw(5) << std::left << jfld << std::setw(10) << std::left << fieldname
-                      << fielddesc << std::endl;
+            std::cout << "    " << std::setw(5) << std::left << jfld << std::setw(16) << std::left << fieldname << " ["
+                      << level << "] " << fielddesc << std::endl;
 
             std::string field = "fields[" + std::to_string(jfld) + "]";
             atlas_io_writer.set(field + ".name", fieldname);
             atlas_io_writer.set(field + ".description", fielddesc);
+            atlas_io_writer.set(field + ".level", level);
             atlas_io_writer.set(field + ".array", atlas::io::copy(values), compression);
             grib.next_message();
         }
@@ -232,12 +234,14 @@ int main(int argc, char* argv[]) {
 
         size_t field_size = reader.read<size_t>("fields.size");
         for (size_t i = 0; i < field_size; ++i) {
-            std::string name = reader.read<std::string>("fields[" + std::to_string(i) + "].name");
-            auto field       = fs.createField<double>(atlas::option::name(name));
+            std::string prefix = "fields[" + std::to_string(i) + "]";
+            long level         = reader.read<long>(prefix + ".level");
+            std::string name   = reader.read<std::string>(prefix + ".name") + "[" + std::to_string(level) + "]";
+            auto field         = fs.createField<double>(atlas::option::name(name));
             {
                 auto field_global = fs.createField(field, atlas::option::global());
                 if (atlas::mpi::rank() == 0) {
-                    reader.read("fields[" + std::to_string(i) + "].array", field_global.array());
+                    reader.read(prefix + ".array", field_global.array());
                 }
                 fs.scatter(field_global, field);
             }
