@@ -184,8 +184,9 @@ struct CommandLineOptions {
             std::string_view arg(argv[c]);
             if (arg == opt) {
                 if (c < argc - 1) {
-                    if (arg[0] != '-') {
-                        value = argv[++c];
+                    std::string_view v(argv[c + 1]);
+                    if (v[0] != '-') {
+                        value = v;
                     }
                 }
             }
